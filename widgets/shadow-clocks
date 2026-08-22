@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# shadow-clocks — emit conky rows for a set of time zones.
+#
+# SHADOW_CLOCKS is "CODE:Zone[:label] ..." — the label defaults to the zone's
+# own abbreviation (%Z), so a city that changes between standard and daylight
+# time stops advertising the wrong one.
+#
+#   shadow-clocks [--plain]
+set -uo pipefail
+
+# CODE:Zone[:fallback-label]. The label shown is the zone's own %Z when that is
+# alphabetic — so Halifax reads ADT in summer and AST in winter rather than
+# advertising the wrong one all year. Zones whose %Z is a numeric offset
+# (Bangkok gives "+07") fall back to the label given here.
+CLOCKS="${SHADOW_CLOCKS:-BKK:Asia/Bangkok:ICT ASU:America/Asuncion:PYT YHZ:America/Halifax NYC:America/New_York}"
+FONT="${SHADOW_CLOCK_FONT:-Lexend:weight=Medium:size=11}"
+C_CODE="${SHADOW_CLOCK_CODE:-#FFFFFF}"
+C_DIM="${SHADOW_CLOCK_DIM:-#333333}"
+C_TIME="${SHADOW_CLOCK_TIME:-#8FD468}"
+
+plain=0
+[[ "${1:-}" == "--plain" ]] && plain=1
+
+ordinal() { # 1 -> 1st, 2 -> 2nd, 3 -> 3rd, 11..13 -> th
+  local d="${1#0}"
+  case $(( d % 100 )) in
+    11|12|13) printf '%sth' "$d"; return ;;
+  esac
+  case $(( d % 10 )) in
+    1) printf '%sst' "$d" ;;
+    2) printf '%snd' "$d" ;;
+    3) printf '%srd' "$d" ;;
+    *) printf '%sth' "$d" ;;
+  esac
+}
+
+for entry in $CLOCKS; do
+  code="${entry%%:*}"
+  rest="${entry#*:}"
+  zone="${rest%%:*}"
+  label="${rest#*:}"
+  [[ "$label" == "$zone" ]] && label=""
+  zabbr="$(TZ="$zone" date '+%Z' 2>/dev/null)"
+  if [[ "$zabbr" =~ ^[A-Za-z]+$ ]]; then
+    label="$zabbr"
+  elif [[ -z "$label" ]]; then
+    label="$zabbr"
+  fi
+  hhmm="$(TZ="$zone" date '+%H:%M' 2>/dev/null)" || continue
+  day="$(ordinal "$(TZ="$zone" date '+%d' 2>/dev/null)")"
+  if (( plain )); then
+    printf '%-4s (%s) %s %s\n' "$code" "$label" "$hhmm" "$day"
+  else
+    printf '${font %s}${color %s}%s${color %s} (%s)${alignr}${color %s}%s %s\n' \
+      "$FONT" "$C_CODE" "$code" "$C_DIM" "$label" "$C_TIME" "$hhmm" "$day"
+  fi
+done

@@ -10,7 +10,9 @@ set -uo pipefail
 
 FEED="${SHADOW_KPI_FEED:-${HOME}/.local/share/shadow/cache/status.json}"
 STALE_MIN="${SHADOW_KPI_STALE_MIN:-45}"
-MAX_ROWS="${SHADOW_KPI_ROWS:-8}"
+MAX_ROWS="${SHADOW_KPI_ROWS:-6}"
+# Units repeat the label on a narrow desktop widget ("open issues  15 issues").
+SHOW_UNITS="${SHADOW_KPI_UNITS:-0}"
 SKIP_BUSINESS="${SHADOW_KPI_SKIP_BUSINESS:-laptop}"
 C_LABEL="${SHADOW_KPI_LABEL:-8fd468}"
 C_TEXT="${SHADOW_KPI_TEXT:-ededed}"
@@ -80,7 +82,7 @@ jq -r --arg skip "$SKIP_BUSINESS" --arg order "$ORDER" '
   col "$C_DIM";   printf '%s' "$short"
   printf '${alignr}'
   if [[ "$ok" == "false" ]]; then col "$C_WARN"; else col "$C_TEXT"; fi
-  printf '%s%s\n' "$value" "${unit:+ $unit}"
+  if [[ "$SHOW_UNITS" == "1" ]]; then printf '%s%s\n' "$value" "${unit:+ $unit}"; else printf '%s\n' "$value"; fi
 done
 
 # A desktop widget has no room for a list of env names; it says how many are

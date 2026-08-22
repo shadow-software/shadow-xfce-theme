@@ -21,6 +21,7 @@ publishing.
 | `widgets/shadow-sysmon` | CPU / GPU / RAM as three stacked percent lines in one compact panel item. |
 | `widgets/shadow-kpi` | Rotates values from a JSON file on the panel. Bring your own JSON. |
 | `widgets/shadow-kpi-lines` | The same feed as a block of lines, for a conky desktop widget. |
+| `widgets/shadow-clocks` | Time-zone rows for conky, labelled from each zone's own `%Z`. |
 
 ## Install
 
@@ -35,8 +36,18 @@ Requires `xfconf-query` (XFCE) and ImageMagick (`magick`) to generate the window
 decorations. `install.sh --apply` records your current theme first; put it back
 with `./install.sh --restore`.
 
-Terminal colours are per-profile and cannot be set from a script:
-**Terminal ▸ Preferences ▸ Colors ▸ Presets ▸ Shadow** after installing.
+Terminal colours: install the preset and pick it under **Terminal ▸ Preferences
+▸ Colors ▸ Presets ▸ Shadow**. Note that xfce4-terminal 1.x reads its settings
+from the `xfce4-terminal` **xfconf channel**, not `terminalrc` — the key names
+are the same, so editing that file appears to work and changes nothing:
+
+```sh
+xfconf-query -c xfce4-terminal -p /color-background -s "#151515"
+xfconf-query -c xfce4-terminal -p /color-use-theme -s false
+```
+
+For the title bar and the shell to read as one surface, the terminal background
+must equal the theme's title colour **and** the two opacities must match.
 
 ## The widgets
 
@@ -81,6 +92,21 @@ Translucency needs a compositor. On XFCE:
 ```sh
 xfconf-query -c xfwm4 -p /general/use_compositing -s true
 ```
+
+**Frame images must be fully opaque.** xfwm4 builds the frame's *input region*
+from the theme images, so a pixel that is not fully opaque is treated as outside
+the window. A translucent title bar keeps being drawn but stops receiving
+clicks: the window cannot be dragged and none of its buttons work. If you want a
+translucent frame, use the compositor instead — it leaves input alone:
+
+```sh
+xfconf-query -c xfwm4 -p /general/frame_opacity -s 92
+```
+
+**Do not set `button_layout` in themerc.** Which buttons appear, and on which
+side, is the user's setting (Settings ▸ Window Manager). A theme that overrides
+it changes something the user chose, and mismatches the drawn buttons against
+xfwm4's own slots so they stop responding.
 
 **If you edit the theme in place, restart the window manager.** xfwm4 loads a
 theme once and keeps it, so rewriting the files under a name it already has

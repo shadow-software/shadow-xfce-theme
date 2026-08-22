@@ -33,9 +33,14 @@ SHADOW_WARN="#e0b657"
 SHADOW_ERROR="#d4756b"
 SHADOW_OK="#9de073"
 
-# Opacity for the window frame and the terminal. They MUST match or a seam
-# appears where the title bar meets the shell area. Requires a compositor
-# (xfwm4 /general/use_compositing); the theme installer turns it on.
+# Opacity for the shell background, and for the window frame via the compositor.
+#
+# The frame PNGs are ALWAYS fully opaque. xfwm4 derives the frame's input shape
+# from the theme images, so a pixel that is not fully opaque is treated as
+# outside the window — a translucent title bar stops receiving clicks entirely
+# and the titlebar becomes undraggable and its buttons dead, while still being
+# drawn. Frame translucency belongs to the compositor
+# (xfwm4 /general/frame_opacity), which leaves the input region intact.
 SHADOW_ALPHA="${SHADOW_ALPHA:-0.96}"
 
 # Terminal ANSI 0-15, built from the same steps
