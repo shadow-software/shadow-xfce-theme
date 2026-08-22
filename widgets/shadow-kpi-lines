@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# shadow-kpi-lines — render the KPI feed as lines for a desktop widget (conky).
+#
+# Same contract as the panel widgets: reads the JSON feed written by the CLI,
+# never calls an API, never holds a credential. Conky only draws what this
+# prints, so the whole thing stays testable from a shell.
+#
+#   shadow-kpi-lines [--plain]     --plain drops conky colour markup
+set -uo pipefail
+
+FEED="${SHADOW_KPI_FEED:-${HOME}/.local/share/shadow/cache/status.json}"
+STALE_MIN="${SHADOW_KPI_STALE_MIN:-45}"
+MAX_ROWS="${SHADOW_KPI_ROWS:-8}"
+SKIP_BUSINESS="${SHADOW_KPI_SKIP_BUSINESS:-laptop}"
+C_LABEL="${SHADOW_KPI_LABEL:-8fd468}"
+C_TEXT="${SHADOW_KPI_TEXT:-ededed}"
+C_WARN="${SHADOW_KPI_WARN:-e0b657}"
+C_DIM="${SHADOW_KPI_DIM:-8b8e84}"
+
+# Readable labels. Anything unlisted just loses its underscores — raw metric
+# names read like a database dump on a desktop widget.
+label_of() {
+  local m="$1" pair
+  if [[ -n "${SHADOW_KPI_LABELS:-}" ]]; then
+    local IFS=','
+    for pair in $SHADOW_KPI_LABELS; do
+      [[ "${pair%%=*}" == "$m" ]] && { printf '%s' "${pair#*=}"; return; }
+    done
+  fi
+  case "$m" in
+    open_issues)              printf 'open issues' ;;
+    open_bugs)                printf 'open bugs' ;;
+    orders_24h)               printf 'orders 24h' ;;
+    revenue_24h)              printf 'revenue 24h' ;;
+    open_support)             printf 'support open' ;;
+    *)                        printf '%s' "${m//_/ }" ;;
+  esac
+}
+
+plain=0
+[[ "${1:-}" == "--plain" ]] && plain=1
+
+# conky wants a hex literal with the hash; without it every colour silently
+# falls back to the default.
+col() { (( plain )) && return 0; printf '${color #%s}' "${1#\#}"; }
+
+if [[ ! -r "$FEED" ]]; then
+  col "$C_WARN"; printf 'no KPI feed yet\n'
+  col "$C_DIM";  printf 'nothing has written it yet\n'
+  exit 0
+fi
+if ! command -v jq >/dev/null 2>&1; then
+  col "$C_WARN"; printf 'jq not installed\n'
+  exit 0
+fi
+
+age_min=$(( ( $(date +%s) - $(stat -c %Y "$FEED") ) / 60 ))
+
+# SHADOW_KPI_ORDER ranks which groups appear first, as a space-separated list of
+# `business` values ("acme beta"). Unset keeps the feed's own order.
+ORDER="${SHADOW_KPI_ORDER:-}"
+
+jq -r --arg skip "$SKIP_BUSINESS" --arg order "$ORDER" '
+  ($order | split(" ")) as $rank
+  | [ .kpis[]
+      | select(.value != null) | select(.business != $skip)
+      # bind first: inside index(), "." is the rank array, not the KPI
+      | . as $k | $k + { rank: (($rank | index($k.business)) // 99) } ]
+  | sort_by(.rank)
+  | .[]
+  | [.business, .metric, (.value|tostring), (.unit // ""), (.ok|tostring)]
+  | @tsv' "$FEED" 2>/dev/null | head -n "$MAX_ROWS" | while IFS=$'\t' read -r biz metric value unit ok; do
+  short="$(label_of "$metric")"
+  if (( plain )); then
+    printf '%-7s%-18s%s%s\n' "$biz" "$short" "$value" "${unit:+ $unit}"
+    continue
+  fi
+  # Right-aligned values, the usual conky layout.
+  col "$C_LABEL"; printf '%s ' "$biz"
+  col "$C_DIM";   printf '%s' "$short"
+  printf '${alignr}'
+  if [[ "$ok" == "false" ]]; then col "$C_WARN"; else col "$C_TEXT"; fi
+  printf '%s%s\n' "$value" "${unit:+ $unit}"
+done
+
+# A desktop widget has no room for a list of env names; it says how many are
+# missing; whatever writes the feed is where the names belong.
+blocked_n="$(jq -r '.blocked | length' "$FEED" 2>/dev/null)"
+if [[ -n "$blocked_n" && "$blocked_n" != "0" && "$blocked_n" != "null" ]]; then
+  col "$C_WARN"
+  if (( plain )); then
+    printf '%s KPI sources blocked on missing config\n' "$blocked_n"
+  else
+    printf 'blocked${alignr}%s env missing\n' "$blocked_n"
+  fi
+fi
+
+if (( age_min > STALE_MIN )); then
+  col "$C_WARN"
+  (( plain )) && printf 'feed %sm old — stale\n' "$age_min" || printf 'feed${alignr}%sm old · stale\n' "$age_min"
+else
+  col "$C_DIM"
+  (( plain )) && printf 'feed %sm old\n' "$age_min" || printf 'feed${alignr}%sm old\n' "$age_min"
+fi

@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# shadow-kpi — XFCE genmon script: rotates KPI values from a JSON feed file.
+#
+# The widget NEVER calls an API and never holds a credential. Something else
+# writes the feed; this only reads it. That split is the point — a panel script
+# is the last place a key should live.
+#
+# Staleness is shown, not hidden: a feed older than SHADOW_KPI_STALE_MIN is
+# marked, because a number presented as live when it is an hour old is worse
+# than no number.
+set -uo pipefail
+
+FEED="${SHADOW_KPI_FEED:-${HOME}/.local/share/shadow/cache/status.json}"
+FONT="${SHADOW_KPI_FONT:-8}"
+C_TEXT="${SHADOW_KPI_TEXT:-#ededed}"
+C_LABEL="${SHADOW_KPI_LABEL:-#8fd468}"
+C_WARN="${SHADOW_KPI_WARN:-#e0b657}"
+STALE_MIN="${SHADOW_KPI_STALE_MIN:-45}"
+IDX_FILE="${XDG_RUNTIME_DIR:-/tmp}/shadow-kpi.idx"
+
+# Which metrics rotate on the panel, in order. Everything else stays in the
+# tooltip — the panel is one line, not a dashboard.
+#
+# Empty (the default) means "everything in the feed that has a value", minus the
+# host metrics that shadow-sysmon already shows. Set SHADOW_KPI_ROTATION to
+# "business:metric metric …" to pin an order. Keeping the default derived from
+# the feed is what lets this script ship publicly with nothing site-specific in
+# it — the JSON decides what rotates, not the widget.
+ROTATION="${SHADOW_KPI_ROTATION:-}"
+SKIP_BUSINESS="${SHADOW_KPI_SKIP_BUSINESS:-laptop}"
+
+esc() { sed -e 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+
+# What a click on the panel item runs. Unset = the item is not clickable.
+click() { [[ -n "${SHADOW_KPI_CLICK:-}" ]] && printf '<txtclick>%s</txtclick>\n' "$SHADOW_KPI_CLICK"; return 0; }
+
+# Panel real estate is one short line, so metric names are abbreviated here and
+# spelled out in full in the tooltip. Override or extend with
+# SHADOW_KPI_LABELS="metric=short,metric=short" — anything unlisted falls back
+# to the first word of the metric name.
+short_name() {
+  local m="$1" pair
+  if [[ -n "${SHADOW_KPI_LABELS:-}" ]]; then
+    local IFS=','
+    for pair in $SHADOW_KPI_LABELS; do
+      [[ "${pair%%=*}" == "$m" ]] && { printf '%s' "${pair#*=}"; return; }
+    done
+  fi
+  case "$m" in
+    open_bugs)                printf 'bugs' ;;
+    open_issues)              printf 'iss' ;;
+    last_error_ticket_age_h)  printf 'err' ;;
+    orders_24h)               printf 'ord' ;;
+    revenue_24h)              printf 'rev' ;;
+    open_support)             printf 'sup' ;;
+    *)                        printf '%s' "${m%%_*}" ;;
+  esac
+}
+
+if [[ ! -r "$FEED" ]]; then
+  printf '<txt><span font_desc="%s" foreground="%s">kpi —</span></txt>\n' "$FONT" "$C_WARN"
+  printf '<tool>no feed yet at %s</tool>\n' "$FEED"
+  click
+  exit 0
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  printf '<txt><span font_desc="%s" foreground="%s">kpi ?</span></txt>\n' "$FONT" "$C_WARN"
+  printf '<tool>jq not installed — shadow-kpi needs it to read the feed</tool>\n'
+  exit 0
+fi
+
+age_min=$(( ( $(date +%s) - $(stat -c %Y "$FEED") ) / 60 ))
+stale=""
+(( age_min > STALE_MIN )) && stale=" ·stale"
+
+if [[ -z "$ROTATION" ]]; then
+  ROTATION="$(jq -r --arg skip "$SKIP_BUSINESS" '
+    .kpis[] | select(.value != null) | select(.business != $skip)
+    | .business + ":" + .metric' "$FEED" 2>/dev/null | tr "\n" " ")"
+fi
+
+# Rotate one position per poll.
+idx=0
+[[ -r "$IDX_FILE" ]] && idx=$(cat "$IDX_FILE" 2>/dev/null || echo 0)
+read -ra keys <<< "$ROTATION"
+count=${#keys[@]}
+(( count == 0 )) && exit 0
+pick=""
+tries=0
+while (( tries < count )); do
+  key="${keys[$(( (idx + tries) % count ))]}"
+  business="${key%%:*}"; metric="${key##*:}"
+  [[ "$business" == "$metric" ]] && business=""
+  row=$(jq -r --arg m "$metric" --arg b "$business" '
+    .kpis[] | select(.metric == $m) | select($b == "" or .business == $b)
+    | [(.business + "." + .metric), (.value|tostring), (.unit // ""), (.ok|tostring)] | @tsv' \
+    "$FEED" 2>/dev/null | head -1)
+  if [[ -n "$row" ]]; then
+    IFS=$'\t' read -r label value unit ok <<< "$row"
+    [[ "$value" == "null" ]] && { tries=$((tries+1)); continue; }
+    pick="$label|$value|$unit|$ok|$metric"
+    idx=$(( (idx + tries + 1) % count ))
+    break
+  fi
+  tries=$((tries+1))
+done
+echo "$idx" > "$IDX_FILE" 2>/dev/null || true
+
+if [[ -z "$pick" ]]; then
+  printf '<txt><span font_desc="%s" foreground="%s">kpi —</span></txt>\n' "$FONT" "$C_WARN"
+else
+  IFS='|' read -r label value unit ok metric <<< "$pick"
+  colour="$C_TEXT"; [[ "$ok" == "false" ]] && colour="$C_WARN"
+  printf '<txt><span font_desc="%s" foreground="%s">%s %s</span> <span font_desc="%s" foreground="%s">%s</span></txt>\n' \
+    "$FONT" "$C_LABEL" "$(printf '%s' "${label%%.*}" | esc)" "$(short_name "$metric")" \
+    "$FONT" "$colour" "$(printf '%s' "$value" | esc)"
+fi
+
+tip=$(jq -r '
+  "generated " + .generated + "\n" +
+  ([ .kpis[] | select(.value != null)
+     | "  " + .business + "." + .metric + ": " + (.value|tostring) + (if .unit then " " + .unit else "" end) ] | join("\n")) +
+  (if (.blocked | length) > 0 then "\nblocked on: " + (.blocked | join(", ")) else "" end)' \
+  "$FEED" 2>/dev/null | esc)
+printf '<tool>shadow-kpi%s (feed %sm old)\n%s</tool>\n' "$stale" "$age_min" "$tip"
+click

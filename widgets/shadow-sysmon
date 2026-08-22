@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# shadow-sysmon — XFCE genmon script: CPU / GPU / RAM as three stacked percent
+# lines in one compact panel item. Replaces the oversized CPU-only cpugraph.
+#
+# Design notes that matter on this laptop:
+#   * a suspended dGPU is NOT woken to be polled. runtime_status is read from
+#     sysfs first; nvidia-smi only runs when the 4060 is already awake. Polling
+#     it every few seconds otherwise is real battery drain for a number that
+#     would read 0 anyway.
+#   * no network, no credentials, no DB. This is a sysfs reader.
+#
+# Palette: marketing/THE-ESSENCE.md — near-black ground, #ededed text,
+# #8fd468 green as glow/accent, amber/red only as load warnings.
+set -uo pipefail
+
+FONT="${SHADOW_SYSMON_FONT:-5.5}"
+# Three lines have to fit a 34px panel. Pango's line_height (>=1.50) squeezes the
+# leading rather than the glyphs, which keeps the digits readable.
+LINE_H="${SHADOW_SYSMON_LINE_HEIGHT:-0.82}"
+C_TEXT="${SHADOW_SYSMON_TEXT:-#ededed}"
+C_LABEL="${SHADOW_SYSMON_LABEL:-#8fd468}"
+C_WARN="${SHADOW_SYSMON_WARN:-#e0b657}"
+C_HOT="${SHADOW_SYSMON_HOT:-#d4756b}"
+STATE="${XDG_RUNTIME_DIR:-/tmp}/shadow-sysmon.cpu"
+
+pct_color() {
+  local v="${1%.*}"
+  if   (( v >= 95 )); then printf '%s' "$C_HOT"
+  elif (( v >= 80 )); then printf '%s' "$C_WARN"
+  else printf '%s' "$C_TEXT"; fi
+}
+
+# --- CPU: delta against the previous poll, so one sample costs nothing -------
+read -r _ u n s i io irq sirq st _ < /proc/stat
+total=$((u + n + s + i + io + irq + sirq + st))
+idle=$((i + io))
+cpu=0
+if [[ -r "$STATE" ]]; then
+  read -r ptotal pidle < "$STATE" 2>/dev/null || true
+  dt=$((total - ${ptotal:-0})); di=$((idle - ${pidle:-0}))
+  (( dt > 0 )) && cpu=$(( (100 * (dt - di)) / dt ))
+fi
+printf '%s %s\n' "$total" "$idle" > "$STATE" 2>/dev/null || true
+(( cpu < 0 )) && cpu=0
+(( cpu > 100 )) && cpu=100
+
+# --- RAM --------------------------------------------------------------------
+mem_total=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+mem_avail=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)
+ram=$(( (100 * (mem_total - mem_avail)) / mem_total ))
+
+# --- GPU: sysfs first, nvidia-smi only if already awake ---------------------
+gpu="0"; gpu_note="dGPU asleep"
+gpu_dev=""
+for d in /sys/bus/pci/devices/*/; do
+  [[ "$(cat "$d/vendor" 2>/dev/null)" == "0x10de" ]] || continue
+  [[ "$(cat "$d/class" 2>/dev/null)" == 0x0300* ]] || continue
+  gpu_dev="$d"; break
+done
+if [[ -n "$gpu_dev" && "$(cat "${gpu_dev}power/runtime_status" 2>/dev/null)" == "active" ]] \
+   && command -v nvidia-smi >/dev/null 2>&1; then
+  read -r gpu vram_used vram_total < <(
+    nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total \
+      --format=csv,noheader,nounits 2>/dev/null | tr -d ' ' | tr ',' ' '
+  ) || gpu=0
+  gpu="${gpu:-0}"
+  gpu_note="VRAM ${vram_used:-?}/${vram_total:-?} MiB"
+fi
+
+# SHADOW_SYSMON_FONT is the one size knob; the spans carry colour only.
+row() { # label value color
+  printf '<span font_desc="%s" foreground="%s">%s</span><span font_desc="%s" foreground="%s">%3s%%</span>' \
+    "$FONT" "$C_LABEL" "$1" "$FONT" "$3" "$2"
+}
+
+printf '<txt>'
+row "C" "$cpu" "$(pct_color "$cpu")"
+printf '\n'
+row "G" "$gpu" "$(pct_color "$gpu")"
+printf '\n'
+row "R" "$ram" "$(pct_color "$ram")"
+printf '</txt>\n'
+
+printf '<tool>CPU %s%%   GPU %s%% (%s)   RAM %s%% of %s MiB</tool>\n' \
+  "$cpu" "$gpu" "$gpu_note" "$ram" "$((mem_total / 1024))"
+# What a click on the panel item runs. Unset = the item is not clickable.
+[[ -n "${SHADOW_SYSMON_CLICK:-}" ]] && printf '<txtclick>%s</txtclick>\n' "$SHADOW_SYSMON_CLICK"
+exit 0
